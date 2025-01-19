@@ -25,24 +25,24 @@ pip install -r requirements.txt
 
 3. Configure bot token in .env file and duty roster in spisok.json
 
-Configuration:
+## Configuration:
   - ADMIN_CHAT_ID: Telegram chat ID for admin commands
   - GROUP_CHAT_ID: Target group for notifications
   - WORK_DAYS: Set of workdays (0=Monday, 6=Sunday)
   - NOTIFICATION_HOUR: Hour for daily notifications (24h format)
   - NOTIFICATION_MINUTE: Minute for daily notifications
 
-Commands:
+## Commands:
   - /next - Manually rotate to next person (admin only)
   - /ping - Check if bot is running
 
-Dependencies:
+## Dependencies:
   - Python 3.8+
   - aiogram 3
   - APScheduler
   - python-dotenv
 
-Deployment:
+## Deployment:
   - Run the bot:
     ```
     python bot.py
