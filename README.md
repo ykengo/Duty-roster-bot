@@ -14,7 +14,7 @@ A Telegram bot for managing duty roster schedules in group chats. Automatically 
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/duty-roster-bot
+git clone https://github.com/ykengo/Duty-roster-bot.git
 cd duty-roster-bot
 ```
 
