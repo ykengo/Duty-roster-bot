@@ -1,14 +1,3 @@
-"""
-Duty Roster Bot
---------------
-A Telegram bot that manages duty roster schedule and notifications.
-Features:
-- Daily notifications about who is on duty
-- Manual duty rotation with /next command
-- Health check with /ping command
-- Automatic duty rotation on workdays
-"""
-
 import asyncio
 import json
 import logging
@@ -24,121 +13,173 @@ from aiogram import BaseMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
-# Bot configuration constants
-ADMIN_CHAT_ID = admin id here  # Admin's personal chat ID for management commands
-GROUP_CHAT_ID = group id here # Group chat ID for duty notifications
-DUTY_FILE = 'spisok.json'  # JSON file storing duty roster data
-WORK_DAYS = {0, 2, 3, 4, 5}  # Workdays: Monday=0, Wednesday=2, Thursday=3, etc
-NOTIFICATION_HOUR = 5  # Hour to send daily notification (24h format)
-NOTIFICATION_MINUTE = "45"  # Minute to send daily notification
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID")
+CHAT_ID = os.getenv("CHAT_ID")
 
-# Initialize environment and router
-load_dotenv()  # Load environment variables from .env file
-TOKEN = os.getenv('BOT_TOKEN')
-if not TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is not set")
 
-hello_router = Router(name='hello')  # Router for handling bot commands
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+scheduler = AsyncIOScheduler(timezone="Asia/Yekaterinburg")
 
-class DutyData:
-    """Manages duty roster data persistence and state"""
-    def __init__(self, filepath: str):
-        """Initialize with JSON file path containing duty data"""
-        self.filepath = filepath
-        self.data = self._load_data()
-    
-    def _load_data(self) -> Dict:
-        """Load duty roster data from JSON file"""
-        with open(self.filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    
-    async def save_data(self):
-        """Save duty roster data with thread safety"""
-        async with asyncio.Lock():  # Prevent concurrent writes
-            with open(self.filepath, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=4)
 
-# Initialize duty data
-duty_data = DutyData(DUTY_FILE)
-spisok = duty_data.data['list']  # List of people on duty
-
-class SchedulerMiddleware(BaseMiddleware):
-    """Middleware to inject scheduler instance into handlers"""
-    def __init__(self, scheduler: AsyncIOScheduler):
-        super().__init__()
-        self._scheduler = scheduler
-
+class AdminMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
-        """Pass scheduler to event handlers"""
-        data["scheduler"] = self._scheduler
+        if event.from_user.id != int(ADMIN_ID):
+            await event.answer("У вас нет прав на использование этого бота.")
+            return
         return await handler(event, data)
 
-async def is_workday() -> bool:
-    """Check if current day is a workday"""
-    return datetime.now().weekday() in WORK_DAYS
 
-async def send_duty_notification(bot: Bot):
-    """Send duty notification and rotate duty roster"""
-    if await is_workday():
-        # Prepare and send notification
-        message = f"Дежурные: {spisok[duty_data.data['n']]}"
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
-        await bot.send_message(chat_id=GROUP_CHAT_ID, text=message)
-        
-        # Rotate to next person on duty
-        if duty_data.data['n'] != len(spisok):
-            duty_data.data['n'] += 1
-        else:
-            duty_data.data['n'] = 0
-        await duty_data.save_data()
+async def get_next_duty():
+    with open("list.json", "r", encoding="utf-8") as file:
+        data = json.load(file)
+    if datetime.now().weekday() in data["work_days"]:
+        with open("list.json", "r", encoding="utf-8") as file:
+            data = json.load(file)
+        duty = data["list"][data["queue"]]
+        await bot.send_message(CHAT_ID, f"Дежурный на сегодня: {duty}")
+        with open("list.json", "w", encoding="utf-8") as file:
+            if data["queue"] >= len(data["list"]) - 1:
+                data["queue"] = 0
+            else:
+                data["queue"] = data["queue"] + 1
+            json.dump(data, file, ensure_ascii=False, indent=4)
 
-@hello_router.message(Command(commands=["next"]))
-async def next(message: Message, bot: Bot):
-    """Handle manual duty rotation command"""
-    if message.chat.id == ADMIN_CHAT_ID and await is_workday():
-        await send_duty_notification(bot)
 
-@hello_router.message(Command(commands=["ping"]))
-async def ping(message: Message, bot: Bot, scheduler: AsyncIOScheduler):
-    """Health check command"""
-    await message.answer(text="pong")
+async def disable_notifications():
+    try:
+        scheduler.remove_job("duty_notification")
+        logging.info("Duty notification job removed")
+    except Exception as e:
+        logging.info(f"No active duty notification job to remove: {e}")
+
+    with open("list.json", "r", encoding="utf-8") as file:
+        data = json.load(file)
+    data["enable"] = False
+    with open("list.json", "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=4)
+
+
+async def enable_notifications():
+    # Remove existing job if it exists
+    try:
+        scheduler.remove_job("duty_notification")
+        logging.info("Removed existing duty notification job")
+    except Exception:
+        logging.info("No existing duty notification job to remove")
+
+    # Add new job
+    scheduler.add_job(
+        get_next_duty,
+        "cron",
+        day="*",
+        hour=14,
+        minute="*",
+        id="duty_notification",
+    )
+    logging.info("Duty notification job scheduled for 7:45 AM")
+
+    with open("list.json", "r", encoding="utf-8") as file:
+        data = json.load(file)
+    data["enable"] = True
+    with open("list.json", "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=4)
+
+
+@dp.message(Command("start"))
+async def start_command(message: Message):
+    await message.answer(
+        "Добро пожаловать в бот дежурств! Используйте /help для просмотра доступных команд."
+    )
+
+
+@dp.message(Command("help"))
+async def help_command(message: Message):
+    help_text = (
+        "Доступные команды:\n"
+        "/start - Запустить бота\n"
+        "/help - Показать это сообщение помощи\n"
+        "/ping - Проверить работу бота\n"
+        "/next - Получить следующего дежурного\n"
+        "/disable - Отключить уведомления\n"
+        "/enable - Включить уведомления\n"
+        "/status - Показать текущий статус"
+    )
+    await message.answer(help_text)
+
+
+@dp.message(Command("ping"))
+async def ping_command(message: Message):
+    await message.answer("Понг!")
+
+
+@dp.message(Command("status"))
+async def status_command(message: Message):
+    with open("list.json", "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    work_days_str = ", ".join([weekdays[day] for day in data["work_days"]])
+
+    current_duty = data["list"][data["queue"]] if data["list"] else "Не назначен"
+
+    if data["enable"]:
+        status_text = (
+            f"✅ Уведомления включены\n"
+            f"👥 Всего дежурных: {len(data["list"])}\n"
+            f"📍 Текущая позиция: {data["queue"] + 1} ({current_duty})\n"
+            f"📅 Рабочие дни: {work_days_str}"
+        )
+    else:
+        status_text = (
+            f"❌ Уведомления отключены\n"
+            f"👥 Всего дежурных: {len(data["list"])}\n"
+            f"📍 Текущая позиция: {data["queue"] + 1} ({current_duty})\n"
+            f"📅 Рабочие дни: {work_days_str}"
+        )
+
+    await message.answer(status_text)
+
+
+@dp.message(Command("enable"))
+async def enable_notifications_command(message: Message):
+    await enable_notifications()
+    await message.answer("Уведомления включены.")
+
+
+@dp.message(Command("disable"))
+async def disable_notifications_command(message: Message):
+    await disable_notifications()
+    await message.answer("Уведомления отключены.")
+
+
+@dp.message(Command("next"))
+async def next_duty_command(message: Message):
+    await get_next_duty()
+
 
 async def main():
-    """Initialize and start the bot"""
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s"
-    )
-    
-    # Initialize scheduler with Moscow timezone
-    scheduler = AsyncIOScheduler(timezone='Europe/Moscow')
+    dp.message.middleware(AdminMiddleware())
+
+    # Start scheduler first
     scheduler.start()
-    
-    # Setup bot and dispatcher
-    bot = Bot(TOKEN)
-    dp = Dispatcher()
-    
-    # Configure middleware and routes
-    dp.update.middleware(SchedulerMiddleware(scheduler=scheduler))
-    dp.include_routers(hello_router)
-    
-    # Schedule daily duty notification
-    scheduler.add_job(
-        send_duty_notification, 
-        'cron', 
-        hour=NOTIFICATION_HOUR, 
-        minute=NOTIFICATION_MINUTE,
-        args=[bot]
-    )
-    
-    # Start bot with error handling
+
+    # Check if notifications should be enabled on startup
+    with open("list.json", "r", encoding="utf-8") as file:
+        data = json.load(file)
+    if data["enable"]:
+        await enable_notifications()
+
     try:
         await dp.start_polling(bot)
-    except Exception as e:
-        logging.error(f"Bot stopped due to error: {e}")
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped.")
     finally:
-        await bot.session.close()
+        await bot.close()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
