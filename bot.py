@@ -75,8 +75,8 @@ async def enable_notifications():
         get_next_duty,
         "cron",
         day="*",
-        hour=14,
-        minute="*",
+        hour=7,
+        minute=45,
         id="duty_notification",
     )
     logging.info("Duty notification job scheduled for 7:45 AM")
